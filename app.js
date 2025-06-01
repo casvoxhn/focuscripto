@@ -385,8 +385,9 @@ app.post('/api/register', async (req, res) => {
         
         res.json({ token, user: result.rows[0] });
     } catch (err) {
-        res.status(400).json({ error: 'Email ya existe' });
-    }
+    console.error('Error en registro:', err);
+    res.status(400).json({ error: 'Error al crear cuenta. Intenta de nuevo.' });
+}
 });
 
 // API: Login
