@@ -1,4 +1,4 @@
-// app.js - TODO EN UN SOLO ARCHIVO PARA RAILWAY
+// app.js - VERSIÓN CORREGIDA
 const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
@@ -12,18 +12,18 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static('public'));
 
-// Configuración de la base de datos (Railway proporciona DATABASE_URL automáticamente)
+// Configuración de la base de datos
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
-// Variables de entorno que necesitas configurar en Railway
+// Variables de entorno
 const JWT_SECRET = process.env.JWT_SECRET || 'cambia-esto-por-algo-seguro';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const STRIPE_SECRET = process.env.STRIPE_SECRET_KEY;
 
-// HTML de la página principal (todo en uno)
+// HTML de la página principal
 const HTML_PAGE = `
 <!DOCTYPE html>
 <html lang="es">
@@ -148,6 +148,11 @@ const HTML_PAGE = `
                     </button>
                     
                     <div class="mt-8 p-4 bg-gray-100 rounded">
+                        <h3 class="font-semibold mb-2">Estado del servicio:</h3>
+                        <p id="serviceStatus" class="text-sm text-gray-600">Esperando configuración...</p>
+                    </div>
+                    
+                    <div class="mt-8 p-4 bg-blue-50 rounded">
                         <h3 class="font-semibold mb-2">Instrucciones:</h3>
                         <ol class="list-decimal list-inside space-y-2 text-sm">
                             <li>Crea un bot en Telegram con @BotFather</li>
@@ -253,7 +258,7 @@ const HTML_PAGE = `
                     alert('Error: ' + data.error);
                 }
             } catch (err) {
-                alert('Error al conectar');
+                alert('Error al conectar: ' + err.message);
             }
         }
 
@@ -281,6 +286,7 @@ const HTML_PAGE = `
 
                 if (response.ok) {
                     alert('¡Configuración guardada! Ya puedes usar tu bot');
+                    document.getElementById('serviceStatus').textContent = '✅ Servicio activo y configurado';
                 } else {
                     alert('Error al guardar');
                 }
@@ -301,6 +307,7 @@ const HTML_PAGE = `
                         document.getElementById('telegramToken').value = config.telegram_token;
                         document.getElementById('wpUrl').value = config.wordpress_url || '';
                         document.getElementById('wpToken').value = config.wordpress_token || '';
+                        document.getElementById('serviceStatus').textContent = '✅ Servicio activo y configurado';
                     }
                 }
             } catch (err) {
@@ -329,98 +336,175 @@ app.get('/', (req, res) => {
     res.send(HTML_PAGE);
 });
 
-// Inicializar base de datos
+// Inicializar base de datos - VERSIÓN MEJORADA
 async function initDB() {
     try {
+        console.log('Inicializando base de datos...');
+        
+        // Crear tabla users
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
-                name VARCHAR(255),
-                email VARCHAR(255) UNIQUE,
-                password_hash VARCHAR(255),
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
+        console.log('Tabla users creada/verificada');
         
+        // Crear tabla configurations
         await pool.query(`
             CREATE TABLE IF NOT EXISTS configurations (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id),
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 telegram_token VARCHAR(255),
                 wordpress_url VARCHAR(255),
                 wordpress_token VARCHAR(255),
-                webhook_url VARCHAR(255)
+                webhook_url VARCHAR(255),
+                UNIQUE(user_id)
             )
         `);
+        console.log('Tabla configurations creada/verificada');
 
+        // Crear tabla messages
         await pool.query(`
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER,
+                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 chat_id BIGINT,
                 content TEXT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
+        console.log('Tabla messages creada/verificada');
         
-        console.log('Base de datos inicializada');
+        console.log('✅ Base de datos inicializada correctamente');
     } catch (err) {
-        console.error('Error al inicializar DB:', err);
+        console.error('❌ Error al inicializar DB:', err);
+        // Intentar reconectar en 5 segundos
+        setTimeout(initDB, 5000);
     }
 }
 
-// API: Registro
+// API: Registro - VERSIÓN MEJORADA
 app.post('/api/register', async (req, res) => {
     const { name, email, password } = req.body;
     
     try {
+        // Validar entrada
+        if (!name || !email || !password) {
+            return res.status(400).json({ error: 'Todos los campos son requeridos' });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
+        }
+
+        // Verificar si el email ya existe
+        const existingUser = await pool.query(
+            'SELECT id FROM users WHERE email = $1',
+            [email.toLowerCase()]
+        );
+
+        if (existingUser.rows.length > 0) {
+            return res.status(400).json({ error: 'Este email ya está registrado' });
+        }
+
+        // Crear hash de contraseña
         const hashedPassword = await bcrypt.hash(password, 10);
         
+        // Insertar usuario
         const result = await pool.query(
             'INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, name, email',
-            [name, email, hashedPassword]
+            [name, email.toLowerCase(), hashedPassword]
         );
         
-        const token = jwt.sign({ id: result.rows[0].id }, JWT_SECRET);
+        // Crear token JWT
+        const token = jwt.sign(
+            { id: result.rows[0].id, email: result.rows[0].email },
+            JWT_SECRET,
+            { expiresIn: '30d' }
+        );
         
-        res.json({ token, user: result.rows[0] });
+        console.log('Usuario creado:', result.rows[0].email);
+        
+        res.json({ 
+            success: true,
+            token, 
+            user: result.rows[0] 
+        });
     } catch (err) {
-    console.error('Error en registro:', err);
-    res.status(400).json({ error: 'Error al crear cuenta. Intenta de nuevo.' });
-}
+        console.error('Error en registro:', err);
+        res.status(500).json({ error: 'Error al crear la cuenta. Por favor intenta de nuevo.' });
+    }
 });
 
-// API: Login
+// API: Login - VERSIÓN MEJORADA
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     
     try {
-        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email y contraseña son requeridos' });
+        }
+
+        const result = await pool.query(
+            'SELECT * FROM users WHERE email = $1',
+            [email.toLowerCase()]
+        );
         
         if (result.rows.length === 0) {
-            return res.status(400).json({ error: 'Usuario no encontrado' });
+            return res.status(400).json({ error: 'Email o contraseña incorrectos' });
         }
         
-        const validPassword = await bcrypt.compare(password, result.rows[0].password_hash);
+        const user = result.rows[0];
+        const validPassword = await bcrypt.compare(password, user.password_hash);
         
         if (!validPassword) {
-            return res.status(400).json({ error: 'Contraseña incorrecta' });
+            return res.status(400).json({ error: 'Email o contraseña incorrectos' });
         }
         
-        const token = jwt.sign({ id: result.rows[0].id }, JWT_SECRET);
+        const token = jwt.sign(
+            { id: user.id, email: user.email },
+            JWT_SECRET,
+            { expiresIn: '30d' }
+        );
+        
+        console.log('Login exitoso:', user.email);
         
         res.json({ 
+            success: true,
             token, 
             user: {
-                id: result.rows[0].id,
-                name: result.rows[0].name,
-                email: result.rows[0].email
+                id: user.id,
+                name: user.name,
+                email: user.email
             }
         });
     } catch (err) {
-        res.status(500).json({ error: 'Error del servidor' });
+        console.error('Error en login:', err);
+        res.status(500).json({ error: 'Error al iniciar sesión' });
     }
 });
+
+// Middleware para verificar token
+function authenticateToken(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    if (!token) {
+        return res.status(401).json({ error: 'Token no proporcionado' });
+    }
+    
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            return res.status(403).json({ error: 'Token inválido' });
+        }
+        req.user = user;
+        next();
+    });
+}
 
 // API: Guardar configuración
 app.post('/api/config', authenticateToken, async (req, res) => {
@@ -441,15 +525,20 @@ app.post('/api/config', authenticateToken, async (req, res) => {
         
         // Configurar webhook en Telegram
         if (telegramToken) {
-            await axios.post(`https://api.telegram.org/bot${telegramToken}/setWebhook`, {
-                url: webhookUrl
-            });
+            try {
+                await axios.post(`https://api.telegram.org/bot${telegramToken}/setWebhook`, {
+                    url: webhookUrl
+                });
+                console.log('Webhook configurado para usuario:', userId);
+            } catch (err) {
+                console.error('Error configurando webhook:', err.message);
+            }
         }
         
         res.json({ success: true, webhookUrl });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Error al guardar' });
+        console.error('Error guardando config:', err);
+        res.status(500).json({ error: 'Error al guardar configuración' });
     }
 });
 
@@ -463,7 +552,8 @@ app.get('/api/config', authenticateToken, async (req, res) => {
         
         res.json(result.rows[0] || {});
     } catch (err) {
-        res.status(500).json({ error: 'Error al cargar' });
+        console.error('Error obteniendo config:', err);
+        res.status(500).json({ error: 'Error al cargar configuración' });
     }
 });
 
@@ -471,6 +561,8 @@ app.get('/api/config', authenticateToken, async (req, res) => {
 app.post('/webhook/:userId', async (req, res) => {
     const { userId } = req.params;
     const { message } = req.body;
+    
+    console.log('Webhook recibido para usuario:', userId);
     
     if (!message) return res.json({ ok: true });
     
@@ -497,9 +589,9 @@ app.post('/webhook/:userId', async (req, res) => {
             // Guardar mensaje
             let content = message.text || '';
             
-            // Si es audio, transcribir
+            // Si es audio, por ahora solo guardamos que es un audio
             if (message.voice) {
-                content = await transcribeAudio(config.telegram_token, message.voice.file_id);
+                content = '[Audio recibido - transcripción pendiente]';
             }
             
             await pool.query(
@@ -507,46 +599,17 @@ app.post('/webhook/:userId', async (req, res) => {
                 [userId, message.chat.id, content]
             );
             
-            await sendTelegramMessage(config.telegram_token, message.chat.id, '✍️ Recibido...');
+            await sendTelegramMessage(config.telegram_token, message.chat.id, '✍️ Recibido... Envía más contenido o escribe "Publicar" para crear el artículo.');
         }
         
         res.json({ ok: true });
     } catch (err) {
-        console.error(err);
+        console.error('Error en webhook:', err);
         res.json({ ok: true });
     }
 });
 
 // Funciones auxiliares
-function authenticateToken(req, res, next) {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    
-    if (!token) return res.sendStatus(401);
-    
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) return res.sendStatus(403);
-        req.user = user;
-        next();
-    });
-}
-
-async function transcribeAudio(botToken, fileId) {
-    try {
-        // Obtener archivo de Telegram
-        const fileInfo = await axios.get(`https://api.telegram.org/bot${botToken}/getFile?file_id=${fileId}`);
-        const filePath = fileInfo.data.result.file_path;
-        const fileUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
-        
-        // Aquí normalmente se transcribiría con OpenAI Whisper
-        // Por simplicidad, retornamos un texto de ejemplo
-        return "Audio recibido y procesado";
-    } catch (err) {
-        console.error('Error transcribiendo:', err);
-        return "Error al procesar audio";
-    }
-}
-
 async function publishContent(userId, config, chatId) {
     try {
         // Obtener todos los mensajes
@@ -563,37 +626,42 @@ async function publishContent(userId, config, chatId) {
         // Combinar contenido
         const content = messages.rows.map(m => m.content).join('\n\n');
         
-        // Generar artículo con IA (simplificado)
+        // Por ahora, crear un artículo simple
         const article = {
             title: "🚀 Nuevo artículo de crypto",
-            content: `<p>${content}</p>`
+            content: `<p>${content.replace(/\n/g, '</p><p>')}</p>`
         };
         
-        // Publicar en WordPress
-        const wpAuth = Buffer.from(`:${config.wordpress_token}`).toString('base64');
-        
-        await axios.post(
-            `${config.wordpress_url}/wp-json/wp/v2/posts`,
-            {
-                title: article.title,
-                content: article.content,
-                status: 'draft'
-            },
-            {
-                headers: {
-                    'Authorization': `Basic ${wpAuth}`,
-                    'Content-Type': 'application/json'
+        // Intentar publicar en WordPress
+        try {
+            const wpAuth = Buffer.from(`:${config.wordpress_token}`).toString('base64');
+            
+            await axios.post(
+                `${config.wordpress_url}/wp-json/wp/v2/posts`,
+                {
+                    title: article.title,
+                    content: article.content,
+                    status: 'draft'
+                },
+                {
+                    headers: {
+                        'Authorization': `Basic ${wpAuth}`,
+                        'Content-Type': 'application/json'
+                    }
                 }
-            }
-        );
-        
-        // Limpiar mensajes
-        await pool.query('DELETE FROM messages WHERE user_id = $1 AND chat_id = $2', [userId, chatId]);
-        
-        await sendTelegramMessage(config.telegram_token, chatId, '✅ Artículo publicado en WordPress!');
+            );
+            
+            // Limpiar mensajes
+            await pool.query('DELETE FROM messages WHERE user_id = $1 AND chat_id = $2', [userId, chatId]);
+            
+            await sendTelegramMessage(config.telegram_token, chatId, '✅ ¡Artículo publicado en WordPress como borrador!');
+        } catch (wpErr) {
+            console.error('Error WordPress:', wpErr.message);
+            await sendTelegramMessage(config.telegram_token, chatId, '❌ Error al publicar. Verifica tu configuración de WordPress.');
+        }
     } catch (err) {
         console.error('Error publicando:', err);
-        await sendTelegramMessage(config.telegram_token, chatId, '❌ Error al publicar');
+        await sendTelegramMessage(config.telegram_token, chatId, '❌ Error al procesar el contenido');
     }
 }
 
@@ -604,12 +672,20 @@ async function sendTelegramMessage(token, chatId, text) {
             text: text
         });
     } catch (err) {
-        console.error('Error enviando mensaje:', err);
+        console.error('Error enviando mensaje Telegram:', err.message);
     }
 }
 
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date() });
+});
+
 // Iniciar servidor
 app.listen(PORT, async () => {
-    await initDB();
     console.log(`Servidor corriendo en puerto ${PORT}`);
+    // Esperar un momento antes de inicializar DB
+    setTimeout(async () => {
+        await initDB();
+    }, 2000);
 });
